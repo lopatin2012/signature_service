@@ -3,6 +3,10 @@ env/
 .venv/
 ENV/
 
+
+# Сертификаты.
+certs/
+
 # VS Code.
 .vscode/
 !.vscode/settings.json
