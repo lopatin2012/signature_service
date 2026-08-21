@@ -1,6 +1,6 @@
 # Signature Service
 
-Микросервис для создания электронных подписей (CAdES-BES) через FastAPI. Кроссплатформенный: работает на Windows (win32com/CAdESCOM) и Linux (endesive).
+Микросервис для создания электронных подписей (CAdES-BES) через FastAPI. Кроссплатформенный: работает на Windows (win32com/CAdESCOM) и Linux (pycades/КриптоПро CSP).
 
 ## Запуск
 
@@ -53,11 +53,20 @@ POST /api/sign/attached/
 
 ### Linux
 
-На Linux используется PKCS#12 файл (`.p12` / `.pfx`). Задайте переменные окружения:
+На Linux используется КриптоПро CSP и библиотека pycades. PFX-сертификат
+импортируется в машинное хранилище КриптоПро при старте контейнера. Задайте
+переменные окружения:
 
 ```bash
-export CERT_PATH="/path/to/certificate.p12"
+export CERT_PATH="/path/to/certificate.pfx"
 export CERT_PASSWORD="your_password"
+```
+
+Для Docker-развёртывания: положите `cert.pfx` в папку `certs/`, задайте пароль и
+(при наличии) ключ лицензии КриптоПро в `.env`, затем:
+
+```bash
+docker compose up -d --build
 ```
 
 ## Установка зависимостей
@@ -86,4 +95,6 @@ requirements.txt     — зависимости
 
 На **Windows** каждая операция подписания выполняется в COM-контексте (`CoInitialize`/`CoUninitialize`). Сертификат ищется в хранилище Windows по серийному номеру.
 
-На **Linux** сертификат загружается из PKCS#12 файла. Файл содержит и приватный ключ, и сертификат.
+На **Linux** используется КриптоПро CSP: сертификат с приватным ключом
+импортируется в машинное хранилище (`certmgr -install -pfx -store mMy`), подпись
+создаётся через pycades.

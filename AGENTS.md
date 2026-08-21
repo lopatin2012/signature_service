@@ -3,7 +3,7 @@
 ## What this is
 
 FastAPI microservice (`main.py`) for signing data with CAdES-BES digital signatures.
-Cross-platform: Windows (win32com/CAdESCOM) and Linux (endesive).
+Cross-platform: Windows (win32com/CAdESCOM) and Linux (pycades/КриптоПро CSP).
 
 ## Run & verify
 
@@ -29,11 +29,11 @@ main.py
   └─ signers/__init__.py   (factory: picks Windows or Linux signer)
        ├─ signers/base.py    (BaseSigner ABC)
        ├─ signers/windows.py (win32com/CAdESCOM — reads Windows cert store)
-       └─ signers/linux.py   (endesive — reads PKCS#12 file from CERT_PATH)
+       └─ signers/linux.py   (pycades/КриптоПро CSP — GOST certs; NOT endesive)
 ```
 
-`enums.py` is a top-level module (imported only by `windows.py`), not part of the `signers`
-package.
+`enums.py` is a top-level module (imported by `windows.py` and `linux.py`), not part of the
+`signers` package.
 
 ## Key gotchas
 
@@ -46,18 +46,33 @@ package.
 - `get_list_certificates()` drops certs with fewer than 1 remaining valid day.
 
 ### Linux (`signers/linux.py`)
-- **PKCS#12 required**: Set env vars `CERT_PATH` (path to .p12/.pfx file) and
-  `CERT_PASSWORD`. Missing `CERT_PATH` → `ValueError` at call time; missing file →
-  `FileNotFoundError`.
-- **Env vars are read at module import time** (`linux.py:18-19`), not per request —
-  changing them requires a process restart.
-- **Serial number ignored**: The Linux signer loads a single configured certificate. The
-  `serial_number` parameter is accepted but never matched against (the .p12 file is the
-  only cert). It is still a required field in `SignRequest`.
+- **pycades/КриптоПро CSP required**: on Linux the signer uses `pycades` (official CryptoPro
+  wrapper) against a **licensed, installed CryptoPro CSP** — not endesive. The container
+  installs CSP from `distros/linux-amd64_deb.tgz` (packages `kc1`, `lsb-cprocsp-devel`,
+  `cprocsp-legacy`, `cprocsp-pki-cades` per the official CryptoPro/pycades Dockerfile) and
+  imports the PFX into the CryptoPro **machine** store at startup (`docker-entrypoint.sh`
+  via `certmgr -install -pfx -store mMy`).
+- **Import style**: `import pycades` (classes on the top level), NOT `from pycades import
+  pycades`. Object names differ from CAdESCOM: `pycades.Signer`, `pycades.SignedData`,
+  `pycades.Attribute`, `pycades.Store` — there is no `CPSigner`/`CadesSignedData`.
+- **Build from source, not PyPI wheel**: the PyPI wheel (`pycades==1.1.4`, KirillOgleznev)
+  bundles its own isolated `.so` libs and cannot see the system CSP store. `linux.py` works
+  only with a pycades built from `git clone https://github.com/CryptoPro/pycades` + `pip install .`
+  (this is what the Dockerfile does).
+- **Machine store**: `_open_store()` uses `CAPICOM_LOCAL_MACHINE_STORE` (1). The user store
+  (`CURRENT_USER`) fails with 0x80070002 unless `uMy` exists. Dates from
+  `ValidFromDate`/`ValidToDate` are **strings** (`DD.MM.YYYY HH:MM:SS`); `Certificates.Count`
+  + `Item(i+1)` (1-based), not `ItemByIndex`.
+- **No signing-time attribute**: adding `AuthenticatedAttributes2` (signing-time attribute)
+  crashes the process with `ATL::CAtlException` on Linux — skip it (CAdES-BES doesn't need it).
+  `Value` must be a string if you do set attributes.
+- **PFX must already be imported**: the signer reads the machine store, it does not load
+  `.pfx` in memory. Import happens in the entrypoint; `serial_number` is matched against the
+  store. The PFX may contain several certs — only the one with `HasPrivateKey()` signs.
 
 ### Both platforms
 - **`data` is a plain string**: the API receives raw text, not base64. Each signer
-  base64-encodes it internally (`windows.py:109/139`, `linux.py:82/101`) before signing.
+  base64-encodes it internally (`windows.py:109/139`, `linux.py:92/116`) before signing.
   The signature output is also base64 with `\r`/`\n` stripped.
 - **Unpinned endpoints mangle input**: `unpinned_signed_data` strips `\n`/`\r` from `data`
   before signing; `attached_signed_data` signs it verbatim.

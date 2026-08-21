@@ -1,6 +1,7 @@
 # Запуск: docker compose up -d --build
 # Перед запуском положите PFX-сертификат в ./certs/cert.pfx
-# и задайте CERT_PASSWORD (например, в .env: CERT_PASSWORD=secret).
+# и задайте в .env: CERT_PASSWORD=secret (пароль PFX),
+# а при наличии — CSP_LICENSE=ключ_лицензии_КриптоПро.
 services:
   signature-service:
     build: .
@@ -11,9 +12,12 @@ services:
     environment:
       SERVICE_HOST: 0.0.0.0
       SERVICE_PORT: 8101
-      # Внутри контейнера всегда LinuxSigner: ему нужен PKCS#12-сертификат.
+      # Внутри контейнера всегда LinuxSigner (pycades/КриптоПро CSP):
+      # сертификат импортируется в хранилище КриптоПро при старте.
       CERT_PATH: /certs/cert.pfx
       CERT_PASSWORD: ${CERT_PASSWORD:-}
+      # Опционально: ключ лицензии КриптоПро CSP.
+      CSP_LICENSE: ${CSP_LICENSE:-}
     volumes:
       # Монтируем сертификат только на чтение.
       - ./certs/cert.pfx:/certs/cert.pfx:ro

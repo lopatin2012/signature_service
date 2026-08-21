@@ -15,5 +15,5 @@ def get_signer() -> BaseSigner:
         return WindowsSigner()
     else:
         from signers.linux import LinuxSigner
-        logger.info("Обнаружена Linux — используется endesive signer.")
+        logger.info("Обнаружена Linux — используется pycades/КриптоПро CSP signer.")
         return LinuxSigner()

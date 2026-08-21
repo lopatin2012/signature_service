@@ -1,90 +1,102 @@
-import os
 import logging
 import base64
-import json
 from datetime import datetime
 
-from cryptography.hazmat.primitives.serialization import pkcs12
-from cryptography.hazmat import backends
-from endesive import plain
-from endesive import signer as endesive_signer
+import pycades
 
 from signers.base import BaseSigner
+from enums import SignatureEnum
 
 logger = logging.getLogger(__name__)
 
-# Пути к сертификату и ключу из переменных окружения.
-# На Linux сертификаты хранятся в PKCS#12 (.p12/.pfx) файле.
-CERT_PATH = os.getenv("CERT_PATH", "")
-CERT_PASSWORD = os.getenv("CERT_PASSWORD", "")
-
-
-def _load_p12():
-    """Загрузить сертификат и ключ из PKCS#12 файла."""
-    if not CERT_PATH:
-        raise ValueError(
-            "Переменная CERT_PATH не задана. "
-            "Укажите путь к PKCS#12 файлу (.p12/.pfx) в переменной окружения."
-        )
-    if not os.path.isfile(CERT_PATH):
-        raise FileNotFoundError(f"Файл сертификата не найден: {CERT_PATH}")
-
-    password = CERT_PASSWORD.encode() if CERT_PASSWORD else None
-    with open(CERT_PATH, "rb") as fp:
-        key, cert, othercerts = pkcs12.load_key_and_certificates(
-            fp.read(), password, backends.default_backend()
-        )
-    return key, cert, othercerts or []
-
 
 class LinuxSigner(BaseSigner):
-    """Реализация подписания через endesive (Linux)."""
+    """Реализация подписания через pycades (КриптоПро CSP, Linux)."""
+
+    def _open_store(self):
+        # pycades на Linux корректно открывает машинное хранилище
+        # (CAPICOM_LOCAL_MACHINE_STORE). Пользовательское (CURRENT_USER) падает
+        # с 0x80070002, т.к. хранилище uMy не создаётся автоматически.
+        oStore = pycades.Store()
+        oStore.Open(
+            SignatureEnum.CAPICOM_LOCAL_MACHINE_STORE.value,
+            SignatureEnum.CAPICOM_MY_STORE.value,
+            SignatureEnum.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED.value,
+        )
+        return oStore
 
     def get_list_certificates(self) -> list[dict]:
+        list_certificates = []
         try:
-            _key, cert, _othercerts = _load_p12()
-            subject = cert.subject
-            # Извлекаем CN (ФИО) из subject.
-            fio = ""
-            inn = "000000000000"
-            for attr in subject:
-                if attr.oid.dotted_string == "2.5.4.3":  # CN
-                    fio = attr.value
-                # endesive не парсит кириллические OID (ИНН),
-                # но если сертификат содержит custom extension — можно добавить позже.
+            oStore = self._open_store()
+            try:
+                for i in range(oStore.Certificates.Count):
+                    val = oStore.Certificates.Item(i + 1)
+                    str_serial_number = val.SerialNumber
+                    subject_parts = val.SubjectName.split(", ")
+                    fio = subject_parts[0][3:] if subject_parts[0].startswith("CN=") else val.SubjectName
+                    lst_inn = [i[4:] for i in subject_parts if i.startswith("ИНН=")]
+                    inn = lst_inn[0] if lst_inn else "000000000000"
 
-            serial_number = format(cert.serial_number, "X")
-            valid_from = cert.not_valid_before_utc.strftime("%d-%m-%Y")
-            valid_for = cert.not_valid_after_utc.strftime("%d-%m-%Y")
-            valid_days = (cert.not_valid_after_utc - datetime.now().astimezone()).days
+                    str_valid_from = datetime.strptime(val.ValidFromDate, "%d.%m.%Y %H:%M:%S").strftime("%d-%m-%Y")
+                    str_valid_for = datetime.strptime(val.ValidToDate, "%d.%m.%Y %H:%M:%S").strftime("%d-%m-%Y")
+                    valid_days = (datetime.strptime(str_valid_for, "%d-%m-%Y") - datetime.now()).days
 
-            if valid_days < 1:
-                logger.warning("Сертификат истёк или истекает сегодня.")
-                return []
+                    if valid_days >= 1 and val.IsValid().Result:
+                        list_certificates.append({
+                            "serial_number": str_serial_number,
+                            "fio": fio,
+                            "inn": inn,
+                            "valid_from": str_valid_from,
+                            "valid_for": str_valid_for,
+                            "valid_days": valid_days,
+                        })
 
-            return [{
-                "serial_number": serial_number,
-                "fio": fio,
-                "inn": inn,
-                "valid_from": valid_from,
-                "valid_for": valid_for,
-                "valid_days": valid_days,
-            }]
+                logger.info(f"Успешно найдено {len(list_certificates)} валидных сертификатов.")
+                return list_certificates
+
+            finally:
+                try:
+                    oStore.Close()
+                except Exception:
+                    pass
 
         except Exception as e:
-            logger.error(f"Ошибка при чтении сертификата: {e}", exc_info=True)
+            logger.error(f"Ошибка при чтении хранилища сертификатов: {e}", exc_info=True)
             return []
+
+    def _find_certificate(self, serial_number: str):
+        """Найти сертификат по серийному номеру в хранилище."""
+        oStore = self._open_store()
+        try:
+            for i in range(oStore.Certificates.Count):
+                val = oStore.Certificates.Item(i + 1)
+                if val.SerialNumber.lower() == serial_number.lower():
+                    return val
+            raise ValueError(f"Сертификат с серийным номером {serial_number} не найден")
+        finally:
+            try:
+                oStore.Close()
+            except Exception:
+                pass
 
     def attached_signed_data(self, data: str, serial_number: str) -> str:
         try:
-            key, cert, othercerts = _load_p12()
+            oCert = self._find_certificate(serial_number)
 
-            data_bytes = base64.b64encode(data.encode("utf-8"))
-            signed_value = endesive_signer.sign(
-                data_bytes, key, cert, othercerts,
-                "sha256", attrs=True,
+            oSigner = pycades.Signer()
+            oSigner.Certificate = oCert
+
+            oSignedData = pycades.SignedData()
+            oSignedData.ContentEncoding = pycades.CADESCOM_BASE64_TO_BINARY
+            oSignedData.Content = base64.b64encode(data.encode("utf-8")).decode("ascii")
+
+            sSignedData = oSignedData.SignCades(
+                oSigner,
+                pycades.CADESCOM_CADES_BES,
+                False,
+                pycades.CADESCOM_ENCODE_BASE64,
             )
-            sSignedData = base64.b64encode(signed_value).decode("ascii")
             sSignedData = sSignedData.replace("\r", "").replace("\n", "")
             return sSignedData
 
@@ -94,17 +106,25 @@ class LinuxSigner(BaseSigner):
 
     def unpinned_signed_data(self, data: str, serial_number: str) -> str:
         try:
-            key, cert, othercerts = _load_p12()
+            oCert = self._find_certificate(serial_number)
+
+            oSigner = pycades.Signer()
+            oSigner.Certificate = oCert
 
             message = str(data).replace(" ", "\u0020").replace("\n", "").replace("\r", "")
             message_bytes = message.encode()
-            data_bytes = base64.b64encode(message_bytes)
+            base64_message = base64.b64encode(message_bytes).decode()
 
-            signed_value = endesive_signer.sign(
-                data_bytes, key, cert, othercerts,
-                "sha256", attrs=True,
+            oSignedData = pycades.SignedData()
+            oSignedData.ContentEncoding = pycades.CADESCOM_BASE64_TO_BINARY
+            oSignedData.Content = base64_message
+
+            sSignedData = oSignedData.SignCades(
+                oSigner,
+                pycades.CADESCOM_CADES_BES,
+                True,
+                pycades.CADESCOM_ENCODE_BASE64,
             )
-            sSignedData = base64.b64encode(signed_value).decode("ascii")
             sSignedData = sSignedData.replace("\r", "").replace("\n", "")
             return sSignedData
 

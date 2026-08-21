@@ -1,4 +1,4 @@
-# Базовый образ: Python 3.13 (та же версия, что в .venv проекта).
+# Базовый образ: Python 3.13 (Debian, совместим с .deb-пакетами КриптоПро).
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -6,19 +6,53 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Зависимости ставим без pywin32: пакет существует только для Windows
-# и ломает установку на Linux. В контейнере всегда работает LinuxSigner
-# (endesive), которому pywin32 не нужен (см. signers/__init__.py).
-#
-# pykcs11 (тянется через endesive) не имеет Linux-колеса и собирается
-# из исходников — на время сборки нужны gcc/g++/libc-dev.
+# Установка Python-зависимостей.
+# pycades (обёртка КриптоПро CAdES) ставится отдельно, т.к. её установка
+# требует уже развёрнутого CSP. pywin32/pykcs11 исключаем: это Windows/endesive-мусор.
 COPY requirements.txt .
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ libc-dev && \
+    apt-get install -y --no-install-recommends \
+        gcc g++ libc-dev ca-certificates curl && \
     grep -iv '^pywin32' requirements.txt > requirements.linux.txt && \
+    grep -iv '^pykcs11' requirements.linux.txt > requirements.linux2.txt && \
+    mv requirements.linux2.txt requirements.linux.txt && \
     pip install --no-cache-dir -r requirements.linux.txt && \
     rm requirements.linux.txt && \
     apt-get purge -y gcc g++ libc-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Установка КриптоПро CSP из локального дистрибутива.
+# Дистрибутив скачан с cryptopro.ru и положен в distros/linux-amd64_deb.tgz.
+# install.sh требует root и собирает базовый набор пакетов (kc1).
+# Дополнительно ставятся пакеты, нужные для сборки pycades из исходников:
+# lsb-cprocsp-devel, cprocsp-legacy, cprocsp-pki-cades (по официальной
+# инструкции CryptoPro/pycades).
+COPY distros/linux-amd64_deb.tgz /tmp/csp.tgz
+RUN mkdir -p /tmp/csp && \
+    tar -xzf /tmp/csp.tgz -C /tmp/csp && \
+    cd /tmp/csp/linux-amd64_deb && \
+    ./install.sh kc1 --yes > /tmp/csp-install.log 2>&1 || \
+        (echo "Ошибка установки КриптоПро CSP, лог:"; cat /tmp/csp-install.log; exit 1) && \
+    apt-get install -y --no-install-recommends \
+        ./lsb-cprocsp-devel* \
+        ./cprocsp-legacy* \
+        ./cprocsp-pki-cades* > /tmp/csp-extra.log 2>&1 || \
+        (echo "Ошибка установки доп. пакетов КриптоПро, лог:"; cat /tmp/csp-extra.log; exit 1) && \
+    rm -rf /tmp/csp /tmp/csp.tgz /tmp/csp-install.log /tmp/csp-extra.log
+
+# pycades собирается из официального репозитория CryptoPro/pycades:
+# PyPI-колесо (KirillOgleznev) несёт собственные изолированные .so и не видит
+# системное хранилище КриптоПро. Сборка из исходников использует системный CSP.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git cmake build-essential libboost-all-dev && \
+    git clone --depth 1 https://github.com/CryptoPro/pycades.git /tmp/pycades && \
+    cd /tmp/pycades && \
+    pip install --no-cache-dir . && \
+    cd / && \
+    rm -rf /tmp/pycades && \
+    apt-get purge -y git cmake build-essential && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/*
 
@@ -26,11 +60,14 @@ RUN apt-get update && \
 COPY main.py enums.py ./
 COPY signers ./signers
 
-# Запуск от непривилегированного пользователя.
-RUN useradd --create-home appuser
-USER appuser
+# Скрипт входа: импорт PFX в хранилище КриптоПро перед запуском.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8101
+
+# КриптоПро CSP работает с хранилищем /var/opt/cprocsp, запускается от root.
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 # python main.py сам читает SERVICE_HOST/SERVICE_PORT из окружения (main.py:119-120).
 CMD ["python", "main.py"]
