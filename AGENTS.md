@@ -2,37 +2,32 @@
 
 ## What this is
 
-FastAPI microservice (`main.py`) for signing data using CAdES-BES digital signatures.
+FastAPI microservice (`main.py`) for signing data with CAdES-BES digital signatures.
 Cross-platform: Windows (win32com/CAdESCOM) and Linux (endesive).
 
-## Run
+## Run & verify
 
 ```
 python main.py
 ```
 
-Serves on `0.0.0.0:8101` by default. `SERVICE_HOST` / `SERVICE_PORT` env vars override via
-`os.getenv` (`main.py:119-120`).
-
-> Trap: the repo's `.env` says `SERVICE_PORT = 8001`, but `python-dotenv` is never called
-> in `main.py` — the file is ignored. The server listens on 8101 unless the env var is
-> exported in the shell. See ".env loading" below.
-
-Auto-generated API docs at `/docs`.
-
-No test suite, no linter/formatter/typecheck config. Verification is manual: run the server
-and hit the endpoints, or `python -m py_compile` the touched files.
+- Serves on `0.0.0.0:8101` by default; `SERVICE_HOST`/`SERVICE_PORT` env vars override via
+  `os.getenv` (`main.py:119-120`).
+- Trap: the repo's `.env` says `SERVICE_PORT = 8001`, but `python-dotenv` is never called —
+  the file is ignored. Env vars must be exported in the shell.
+- No test suite, no linter/formatter/typecheck config. Verification is manual: run the server
+  and hit the endpoints, or `python -m py_compile` the touched files.
+- Deps are pinned in `requirements.txt`; a Python 3.13 venv exists at `.venv/`.
 
 ## Architecture
 
 OS detection happens once at startup in `signers/__init__.py:get_signer()`. The returned
-`BaseSigner` instance is created at module import time (`main.py:34`) and used for all
-requests.
+`BaseSigner` instance is created at module import time (`main.py:34`) and used for all requests.
 
 ```
 main.py
   └─ signers/__init__.py   (factory: picks Windows or Linux signer)
-       ├─ signers/base.py   (BaseSigner ABC)
+       ├─ signers/base.py    (BaseSigner ABC)
        ├─ signers/windows.py (win32com/CAdESCOM — reads Windows cert store)
        └─ signers/linux.py   (endesive — reads PKCS#12 file from CERT_PATH)
 ```
@@ -52,31 +47,30 @@ package.
 
 ### Linux (`signers/linux.py`)
 - **PKCS#12 required**: Set env vars `CERT_PATH` (path to .p12/.pfx file) and
-  `CERT_PASSWORD`. Without these, the Linux signer raises `ValueError` at call time.
+  `CERT_PASSWORD`. Missing `CERT_PATH` → `ValueError` at call time; missing file →
+  `FileNotFoundError`.
+- **Env vars are read at module import time** (`linux.py:18-19`), not per request —
+  changing them requires a process restart.
 - **Serial number ignored**: The Linux signer loads a single configured certificate. The
-  `serial_number` parameter in the API is accepted but not matched against (the .p12 file is
-  the only cert). It is still a required field in `SignRequest`.
+  `serial_number` parameter is accepted but never matched against (the .p12 file is the
+  only cert). It is still a required field in `SignRequest`.
 
 ### Both platforms
 - **`data` is a plain string**: the API receives raw text, not base64. Each signer
   base64-encodes it internally (`windows.py:109/139`, `linux.py:82/101`) before signing.
-  The signature output is also base64 with `\r`/`\n` stripped. Keep this in mind when
-  modifying input handling.
-- **`.env` loading**: `python-dotenv` is listed in requirements but never called in
-  `main.py` — env vars are read directly via `os.getenv`. The `.env` file has no effect.
-- **pywin32 on Linux**: `pywin32` is in requirements but only works on Windows. On Linux,
-  pip will install it but it's never imported (the Linux signer module uses endesive instead).
-- **Error mapping**: `ValueError` raised by a signer (e.g. cert not found, missing
-  `CERT_PATH`) is mapped to HTTP 404 in `main.py`; any other exception → HTTP 500.
+  The signature output is also base64 with `\r`/`\n` stripped.
+- **Unpinned endpoints mangle input**: `unpinned_signed_data` strips `\n`/`\r` from `data`
+  before signing; `attached_signed_data` signs it verbatim.
+- **Cert listing never fails**: `get_list_certificates()` catches all exceptions and
+  returns `[]` (HTTP 200) on both platforms — a broken cert store looks like "no
+  certificates".
+- **Error mapping** (`main.py`): a signer `ValueError` (e.g. cert not found, missing
+  `CERT_PATH`) → HTTP 404 on the sign endpoints; any other exception → HTTP 500.
+  `/api/certificates/` maps everything to 500.
+- **pywin32 on Linux**: `pywin32` is in requirements but only works on Windows. It is
+  never imported on Linux — the factory (`signers/__init__.py`) guards the import by
+  platform.
 
-## Project structure
+## Conventions
 
-- `main.py` — FastAPI app, routes, Pydantic models
-- `enums.py` — `SignatureEnum` with CAdESCOM/CAPICOM constants (Windows-only)
-- `signers/` — OS-abstracted signing layer
-  - `base.py` — `BaseSigner` ABC
-  - `windows.py` — win32com implementation
-  - `linux.py` — endesive implementation
-  - `__init__.py` — `get_signer()` factory
-- `requirements.txt` — pinned deps
-- `.env` — runtime config (SERVICE_HOST, SERVICE_PORT, CERT_PATH, CERT_PASSWORD)
+- Comments, log messages, README, and commit messages are in Russian — match that.
