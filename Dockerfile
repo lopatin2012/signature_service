@@ -9,10 +9,18 @@ WORKDIR /app
 # Зависимости ставим без pywin32: пакет существует только для Windows
 # и ломает установку на Linux. В контейнере всегда работает LinuxSigner
 # (endesive), которому pywin32 не нужен (см. signers/__init__.py).
+#
+# pykcs11 (тянется через endesive) не имеет Linux-колеса и собирается
+# из исходников — на время сборки нужны gcc/g++/libc-dev.
 COPY requirements.txt .
-RUN grep -iv '^pywin32' requirements.txt > requirements.linux.txt && \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc g++ libc-dev && \
+    grep -iv '^pywin32' requirements.txt > requirements.linux.txt && \
     pip install --no-cache-dir -r requirements.linux.txt && \
-    rm requirements.linux.txt
+    rm requirements.linux.txt && \
+    apt-get purge -y gcc g++ libc-dev && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
 
 # Код приложения.
 COPY main.py enums.py ./
