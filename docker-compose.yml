@@ -1,0 +1,20 @@
+# Запуск: docker compose up -d --build
+# Перед запуском положите PFX-сертификат в ./certs/cert.pfx
+# и задайте CERT_PASSWORD (например, в .env: CERT_PASSWORD=secret).
+services:
+  signature-service:
+    build: .
+    image: signature-service:latest
+    container_name: signature-service
+    ports:
+      - "8101:8101"
+    environment:
+      SERVICE_HOST: 0.0.0.0
+      SERVICE_PORT: 8101
+      # Внутри контейнера всегда LinuxSigner: ему нужен PKCS#12-сертификат.
+      CERT_PATH: /certs/cert.pfx
+      CERT_PASSWORD: ${CERT_PASSWORD:-}
+    volumes:
+      # Монтируем сертификат только на чтение.
+      - ./certs/cert.pfx:/certs/cert.pfx:ro
+    restart: unless-stopped
