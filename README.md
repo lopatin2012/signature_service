@@ -75,18 +75,57 @@ docker compose up -d --build
 pip install -r requirements.txt
 ```
 
+## Тестирование
+
+Зависимости для тестов (`pytest`, `httpx`) включены в `requirements.txt`.
+
+### Быстрые API-тесты (не требуют криптопровайдера)
+
+Проверяют маршрутизацию, маппинг ошибок и формат ответов, подменяя реальный
+`signer` на фейк.
+
+```bash
+python -m pytest tests/test_api.py -v
+```
+
+### Интеграционные тесты сертификата (требуют криптопровайдер)
+
+Проверяют реального подписанта (CAdESCOM на Windows / pycades+КриптоПро на
+Linux) и наличие валидного сертификата в хранилище. По умолчанию пропускаются;
+запускаются только с маркером `cert`:
+
+```bash
+python -m pytest tests/test_certificate.py -m cert -v
+```
+
+### Авто-тесты при запуске сервиса
+
+Сервис умеет запускать быстрые тесты перед стартом и **не стартует**, если
+хотя бы один тест не пройден:
+
+```bash
+python main.py --selftest
+```
+
+В Docker авто-тесты запускаются автоматически при подъёме контейнера
+(`docker compose up` запускает `python main.py --selftest`).
+
 ## Структура проекта
 
 ```
-main.py              — FastAPI приложение, маршруты
+main.py              — FastAPI приложение, маршруты, selftest
 enums.py             — константы CAdESCOM/CAPICOM
 signers/
   __init__.py        — фабрика: выбор signer по ОС
   base.py            — абстрактный базовый класс
   windows.py         — реализация для Windows
   linux.py           — реализация для Linux
-requirements.txt     — зависимости
-.env                 — переменные окружения
+tests/
+  conftest.py        — регистрация маркера `cert`
+  test_api.py        — быстрые API-тесты (с фейк signer'ом)
+  test_certificate.py— интеграционные тесты сертификата (`-m cert`)
+requirements.txt     — зависимости (вкл. pytest, httpx)
+.env                 — переменные окружения (для docker compose)
 ```
 
 ## Как это работает

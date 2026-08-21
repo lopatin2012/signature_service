@@ -113,9 +113,34 @@ async def sign_unpinned(request: SignRequest):
         )
 
 
+def run_selftest() -> bool:
+    """Запуск авто-тестов перед стартом сервиса (`python main.py --selftest`).
+
+    Выполняет быстрые API-тесты (без криптопровайдера). При падении любого теста
+    возвращает False, чтобы сервер не стартовал.
+    """
+    try:
+        import pytest
+    except ImportError:
+        logger.error('Авто-тесты требуют pytest: pip install pytest httpx')
+        return False
+
+    logger.info('Запуск авто-тестов (selftest)...')
+    code = pytest.main(['-q', '-m', 'not cert', '--no-header', 'tests/'])
+    return code == 0
+
+
 # Точка запуска.
 if __name__ == '__main__':
+    import sys
     import uvicorn
+
+    if '--selftest' in sys.argv:
+        if not run_selftest():
+            logger.error('Авто-тесты не пройдены — сервис не запущен.')
+            raise SystemExit(1)
+        logger.info('Авто-тесты пройдены.')
+
     HOST = os.getenv('SERVICE_HOST', '0.0.0.0')
     PORT = int(os.getenv('SERVICE_PORT', 8101))
     uvicorn.run(app=app, host=HOST, port=PORT, log_level='debug')

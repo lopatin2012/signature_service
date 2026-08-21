@@ -13,11 +13,20 @@ python main.py
 
 - Serves on `0.0.0.0:8101` by default; `SERVICE_HOST`/`SERVICE_PORT` env vars override via
   `os.getenv` (`main.py:119-120`).
-- Trap: the repo's `.env` says `SERVICE_PORT = 8001`, but `python-dotenv` is never called —
-  the file is ignored. Env vars must be exported in the shell.
-- No test suite, no linter/formatter/typecheck config. Verification is manual: run the server
-  and hit the endpoints, or `python -m py_compile` the touched files.
-- Deps are pinned in `requirements.txt`; a Python 3.13 venv exists at `.venv/`.
+- Trap: `.env` is committed and read by `docker compose` (for `${CERT_PASSWORD}` /
+  `${CSP_LICENSE}` substitution) but NOT by the app — `python-dotenv` is never called.
+  The README ("настраиваются через `.env`") is misleading: export `SERVICE_HOST`/
+  `SERVICE_PORT` in the shell instead.
+- Tests live in `tests/` and run with pytest. Quick API tests (no crypto provider)
+  are the default: `python -m pytest tests/test_api.py`. The cert integration tests
+  require a real provider + a valid cert in the store and are opt-in:
+  `pytest tests/test_certificate.py -m cert`. `python main.py --selftest` runs the
+  API tests before starting the server and aborts startup on failure (this is what
+  the Docker `CMD` does). No linter/formatter/typecheck config; besides pytest,
+  verify manually or with `python -m py_compile`.
+- Deps are pinned in `requirements.txt` (note: `pycades` is NOT in it — the Dockerfile builds
+  it from source). Default `python` here is 3.14; a 3.13 interpreter matching the
+  `python:3.13-slim` image is available via `py -V:3.13`.
 
 ## Architecture
 

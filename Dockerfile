@@ -59,6 +59,7 @@ RUN apt-get update && \
 # Код приложения.
 COPY main.py enums.py ./
 COPY signers ./signers
+COPY tests ./tests
 
 # Скрипт входа: импорт PFX в хранилище КриптоПро перед запуском.
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -69,8 +70,9 @@ EXPOSE 8101
 # КриптоПро CSP работает с хранилищем /var/opt/cprocsp, запускается от root.
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
-# python main.py сам читает SERVICE_HOST/SERVICE_PORT из окружения (main.py:119-120).
-CMD ["python", "main.py"]
+# python main.py --selftest запускает авто-тесты перед стартом сервера
+# (main.py сам читает SERVICE_HOST/SERVICE_PORT из окружения).
+CMD ["python", "main.py", "--selftest"]
 
 # Проверка живости через корневой эндпоинт.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
