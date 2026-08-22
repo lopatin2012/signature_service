@@ -14,6 +14,7 @@ import base64
 import pytest
 
 from signers import get_signer
+from signers.base import CertificateInfo
 
 pytestmark = pytest.mark.cert
 
@@ -45,7 +46,7 @@ def serial_number(signer):
     certs = signer.get_list_certificates()
     if not certs:
         pytest.skip("В хранилище нет валидных сертификатов")
-    return certs[0]["serial_number"]
+    return certs[0].serial_number
 
 
 @pytest.fixture(scope="module")
@@ -57,32 +58,35 @@ def test_certificate_listing_returns_expected_fields(signer):
     certs = signer.get_list_certificates()
     assert isinstance(certs, list)
     for c in certs:
-        for field in ("serial_number", "fio", "inn", "valid_from", "valid_for", "valid_days"):
-            assert field in c, f"Поле {field} отсутствует в описании сертификата"
-        assert isinstance(c["serial_number"], str) and c["serial_number"]
-        assert isinstance(c["valid_days"], int)
+        assert isinstance(c, CertificateInfo)
+        assert isinstance(c.serial_number, str) and c.serial_number
+        assert isinstance(c.subject, str) and c.subject
+        assert isinstance(c.valid_from, str) and isinstance(c.valid_to, str)
 
 
 def test_attached_signature_is_valid_base64(signer, serial_number, sample_data):
-    signed = signer.attached_signed_data(sample_data, serial_number)
+    signed, result = signer.attached_signed_data(sample_data.encode("utf-8"), serial_number)
+    assert result.success
     assert isinstance(signed, str) and signed
     assert "\r" not in signed and "\n" not in signed
     base64.b64decode(signed, validate=True)
 
 
 def test_unpinned_signature_is_valid_base64(signer, serial_number, sample_data):
-    signed = signer.unpinned_signed_data(sample_data, serial_number)
+    signed, result = signer.unpinned_signed_data(sample_data.encode("utf-8"), serial_number)
+    assert result.success
     assert isinstance(signed, str) and signed
     assert "\r" not in signed and "\n" not in signed
     base64.b64decode(signed, validate=True)
 
 
 def test_signature_differs_between_inputs(signer, serial_number):
-    s1 = signer.attached_signed_data("текст номер один", serial_number)
-    s2 = signer.attached_signed_data("текст номер два", serial_number)
+    s1, r1 = signer.attached_signed_data("текст номер один".encode(), serial_number)
+    s2, r2 = signer.attached_signed_data("текст номер два".encode(), serial_number)
+    assert r1.success and r2.success
     assert s1 != s2
 
 
 def test_unknown_serial_raises_value_error(signer, sample_data):
     with pytest.raises(ValueError):
-        signer.attached_signed_data(sample_data, "NONEXISTENT_SERIAL_000")
+        signer.attached_signed_data(sample_data.encode("utf-8"), "NONEXISTENT_SERIAL_000")

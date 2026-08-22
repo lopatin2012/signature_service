@@ -58,3 +58,30 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/settings.json
+.vscode/tasks.json
+.vscode/launch.json
+.vscode/extensions.json
+
+# Coverage reports
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+
+# Testing artifacts
+*.log
+test-results/
+.reports/

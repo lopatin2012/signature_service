@@ -1,133 +1,174 @@
-import logging
+# Подписант для Linux: pycades + КриптоПро CSP (машинное хранилище mMy).
+#
+# ВАЖНО: официальный wheel pycades не работает с системным CSP — ставьте из исходников:
+#   git clone https://github.com/CryptoPro/pycades.git && cd pycades && pip install .
+
 import base64
+import logging
+import os
 from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
-import pycades
-
-from signers.base import BaseSigner
 from enums import SignatureEnum
+from signers.base import (
+    BaseSigner,
+    CertificateInfo,
+    SigningError,
+    SigningErrorCategory,
+    SigningResult,
+    classify_signing_error,
+)
 
 logger = logging.getLogger(__name__)
 
+try:
+    import pycades
+except ImportError:  # pragma: no cover — зависит от окружения
+    pycades = None
 
-class LinuxSigner(BaseSigner):
-    """Реализация подписания через pycades (КриптоПро CSP, Linux)."""
 
-    def _open_store(self):
-        # pycades на Linux корректно открывает машинное хранилище
-        # (CAPICOM_LOCAL_MACHINE_STORE). Пользовательское (CURRENT_USER) падает
-        # с 0x80070002, т.к. хранилище uMy не создаётся автоматически.
+def csp_available() -> bool:
+    """Проверяет, доступен ли КриптоПро CSP."""
+    if pycades is None:
+        return False
+    try:
         oStore = pycades.Store()
         oStore.Open(
             SignatureEnum.CAPICOM_LOCAL_MACHINE_STORE.value,
             SignatureEnum.CAPICOM_MY_STORE.value,
             SignatureEnum.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED.value,
         )
+        count = oStore.Certificates.Count
+        oStore.Close()
+        logger.debug(f"[LinuxSigner] CSP OK — {count} certs in mMy.")
+        return True
+    except SigningError:
+        raise
+    except Exception as e:
+        raise SigningError(str(e), category=SigningErrorCategory.SYSTEM_UNAVAILABLE) from e
+
+
+class LinuxSigner(BaseSigner):
+    """Подпись на Linux через pycades + КриптоПро CSP."""
+
+    def __init__(self) -> None:
+        if pycades is None:
+            raise ImportError(
+                "pycades not installed. Run: pip install git+https://github.com/CryptoPro/pycades.git@master"
+            )
+        self._pfx_path: Optional[Path] = None
+
+    @property
+    def pfx_path(self) -> Path:
+        path_str = os.getenv("CERT_PATH", "/certs/cert.pfx")
+        return Path(path_str).expanduser().resolve()
+
+    @staticmethod
+    def _open_store():
+        """Открывает машинное хранилище (mMy) сертификатов КриптоПро."""
+        oStore = pycades.Store()
+        try:
+            oStore.Open(
+                SignatureEnum.CAPICOM_LOCAL_MACHINE_STORE.value,
+                SignatureEnum.CAPICOM_MY_STORE.value,
+                SignatureEnum.CAPICOM_STORE_OPEN_MAXIMUM_ALLOWED.value,
+            )
+        except SigningError:
+            raise
+        except Exception as e:
+            raise SigningError(str(e), category=SigningErrorCategory.SYSTEM_UNAVAILABLE) from e
         return oStore
 
-    def get_list_certificates(self) -> list[dict]:
-        list_certificates = []
-        try:
-            oStore = self._open_store()
-            try:
-                for i in range(oStore.Certificates.Count):
-                    val = oStore.Certificates.Item(i + 1)
-                    str_serial_number = val.SerialNumber
-                    subject_parts = val.SubjectName.split(", ")
-                    fio = subject_parts[0][3:] if subject_parts[0].startswith("CN=") else val.SubjectName
-                    lst_inn = [i[4:] for i in subject_parts if i.startswith("ИНН=")]
-                    inn = lst_inn[0] if lst_inn else "000000000000"
-
-                    str_valid_from = datetime.strptime(val.ValidFromDate, "%d.%m.%Y %H:%M:%S").strftime("%d-%m-%Y")
-                    str_valid_for = datetime.strptime(val.ValidToDate, "%d.%m.%Y %H:%M:%S").strftime("%d-%m-%Y")
-                    valid_days = (datetime.strptime(str_valid_for, "%d-%m-%Y") - datetime.now()).days
-
-                    if valid_days >= 1 and val.IsValid().Result:
-                        list_certificates.append({
-                            "serial_number": str_serial_number,
-                            "fio": fio,
-                            "inn": inn,
-                            "valid_from": str_valid_from,
-                            "valid_for": str_valid_for,
-                            "valid_days": valid_days,
-                        })
-
-                logger.info(f"Успешно найдено {len(list_certificates)} валидных сертификатов.")
-                return list_certificates
-
-            finally:
-                try:
-                    oStore.Close()
-                except Exception:
-                    pass
-
-        except Exception as e:
-            logger.error(f"Ошибка при чтении хранилища сертификатов: {e}", exc_info=True)
-            return []
-
-    def _find_certificate(self, serial_number: str):
-        """Найти сертификат по серийному номеру в хранилище."""
+    def get_list_certificates(self) -> list[CertificateInfo]:
+        certs: list[CertificateInfo] = []
         oStore = self._open_store()
         try:
             for i in range(oStore.Certificates.Count):
-                val = oStore.Certificates.Item(i + 1)
-                if val.SerialNumber.lower() == serial_number.lower():
-                    return val
-            raise ValueError(f"Сертификат с серийным номером {serial_number} не найден")
+                cert = oStore.Certificates.Item(i + 1)
+                subject_parts = str(cert.SubjectName).split(", ")
+                fio = subject_parts[0][3:] if subject_parts and subject_parts[0].startswith("CN=") else str(cert.SubjectName)
+                valid_to_str = datetime.strptime(str(cert.ValidToDate), "%d.%m.%Y %H:%M:%S").strftime("%d-%m-%Y")
+                days_valid = (datetime.strptime(valid_to_str, "%d-%m-%Y") - datetime.now()).days
+                if days_valid >= 1 and cert.IsValid().Result:
+                    certs.append(CertificateInfo(
+                        serial_number=str(cert.SerialNumber),
+                        subject=fio, issuer=str(cert.IssuerName),
+                        valid_from=datetime.strptime(str(cert.ValidFromDate), "%d.%m.%Y %H:%M:%S").strftime("%d-%m-%Y"),
+                        valid_to=valid_to_str, thumbprint=None,
+                    ))
+            logger.info(f"[LinuxSigner] Found {len(certs)} valid certificates.")
+        except SigningError:
+            raise
         finally:
-            try:
-                oStore.Close()
-            except Exception:
-                pass
+            oStore.Close()
+        return certs
 
-    def attached_signed_data(self, data: str, serial_number: str) -> str:
+    def attached_signed_data(self, data: bytes, serial_number: str) -> tuple[str, SigningResult]:
+        """CAdES-BES прикреплённая подпись (содержимое внутри подписи)."""
         try:
-            oCert = self._find_certificate(serial_number)
+            return self._do_sign(data, serial_number, detached=False)
+        except SigningError:
+            raise
+        except Exception as e:
+            category = classify_signing_error(e)
+            logger.error(f"[LinuxSigner] Неудачная попытка подписи: {e}", exc_info=True)
+            raise SigningError(str(e), category=category) from e
+
+    def unpinned_signed_data(self, data: bytes, serial_number: str) -> tuple[str, SigningResult]:
+        """CAdES-BES откреплённая подпись (без содержимого документа)."""
+        try:
+            return self._do_sign(data, serial_number, detached=True)
+        except SigningError:
+            raise
+        except Exception as e:
+            category = classify_signing_error(e)
+            logger.error(f"[LinuxSigner] Неудачная попытка подписи: {e}", exc_info=True)
+            raise SigningError(str(e), category=category) from e
+
+    def _do_sign(self, data: bytes, serial_number: str, detached: bool) -> tuple[str, SigningResult]:
+        """Находит сертификат и создаёт подпись CAdES-BES в рамках одного открытого хранилища."""
+        oStore = self._open_store()
+        try:
+            target_serial = serial_number.replace("-", "").lower()
+            oCert = None
+            for cert in oStore.Certificates:
+                if str(cert.SerialNumber).replace("-", "").lower() == target_serial:
+                    oCert = cert
+                    break
+            if oCert is None:
+                # Сертификат не найден — это ошибка входных данных, ретрайт бессмыслен.
+                raise ValueError(
+                    f"Сертификат с серийным номером '{serial_number}' не найден. "
+                    f"Убедитесь, что сертификат установлен в машинное хранилище mMy и валиден."
+                )
 
             oSigner = pycades.Signer()
             oSigner.Certificate = oCert
-
             oSignedData = pycades.SignedData()
             oSignedData.ContentEncoding = pycades.CADESCOM_BASE64_TO_BINARY
-            oSignedData.Content = base64.b64encode(data.encode("utf-8")).decode("ascii")
-
-            sSignedData = oSignedData.SignCades(
-                oSigner,
-                pycades.CADESCOM_CADES_BES,
-                False,
-                pycades.CADESCOM_ENCODE_BASE64,
+            oSignedData.Content = base64.b64encode(data).decode("ascii")
+            result_bytes = oSignedData.SignCades(
+                oSigner, pycades.CADESCOM_CADES_BES, bool(detached), pycades.CADESCOM_ENCODE_BASE64
             )
-            sSignedData = sSignedData.replace("\r", "").replace("\n", "")
-            return sSignedData
+            return base64.b64encode(result_bytes).decode(), SigningResult(success=True)
+        finally:
+            oStore.Close()
 
-        except Exception as e:
-            logger.error(f"Ошибка при создании прикреплённой подписи: {e}", exc_info=True)
-            raise
 
-    def unpinned_signed_data(self, data: str, serial_number: str) -> str:
-        try:
-            oCert = self._find_certificate(serial_number)
-
-            oSigner = pycades.Signer()
-            oSigner.Certificate = oCert
-
-            message = str(data).replace(" ", "\u0020").replace("\n", "").replace("\r", "")
-            message_bytes = message.encode()
-            base64_message = base64.b64encode(message_bytes).decode()
-
-            oSignedData = pycades.SignedData()
-            oSignedData.ContentEncoding = pycades.CADESCOM_BASE64_TO_BINARY
-            oSignedData.Content = base64_message
-
-            sSignedData = oSignedData.SignCades(
-                oSigner,
-                pycades.CADESCOM_CADES_BES,
-                True,
-                pycades.CADESCOM_ENCODE_BASE64,
-            )
-            sSignedData = sSignedData.replace("\r", "").replace("\n", "")
-            return sSignedData
-
-        except Exception as e:
-            logger.error(f"Ошибка при создании откреплённой подписи: {e}", exc_info=True)
-            raise
+def get_signer() -> BaseSigner:
+    """Фабрика: возвращает LinuxSigner на Linux."""
+    logger.info("[LinuxSigner] Initializing signer with CSP...")
+    try:
+        if not csp_available():
+            raise OSError("CryptoPro CSP unavailable or no certificates in mMy store.")
+        signer_instance = LinuxSigner()
+        certs_count = len(signer_instance.get_list_certificates())
+        logger.info(f"[LinuxSigner] Initialized. Found {certs_count} certificates.")
+        return signer_instance
+    except ImportError as e:
+        logger.critical(f"[LinuxSigner] Import error — install pycades from source! Error: {e}")
+        raise SystemExit(1)
+    except SigningError:
+        logger.fatal("[LinuxSigner] Cannot connect to CryptoPro CSP — is it running? Run 'cprocsp --version'")
+        raise SystemExit(1)
