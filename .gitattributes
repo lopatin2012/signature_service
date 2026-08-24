@@ -1,0 +1,7 @@
+# This repo deploys to Linux containers. Windows devs with core.autocrlf=true
+# get shell scripts rewritten to CRLF on checkout, which breaks the Docker
+# ENTRYPOINT: the kernel tries to exec "#!/bin/sh\r" and fails with
+# "exec /usr/local/bin/docker-entrypoint.sh: no such file or directory".
+# Force LF for checked-out text so the container always sees Unix line endings.
+* text=auto eol=lf
+*.sh text eol=lf
