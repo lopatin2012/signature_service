@@ -1,18 +1,99 @@
 import base64
 import gc
 import logging
-from datetime import datetime
+import os
+import subprocess
+import sys
 from contextlib import contextmanager, suppress
+from datetime import datetime
+from pathlib import Path
 
 import pythoncom
 import win32com.client
 
-from signers.base import (
-    BaseSigner, SigningResult, SigningError, SigningErrorCategory, classify_signing_error, CertificateInfo,
-)
 from enums import SignatureEnum
+from signers.base import (
+    BaseSigner,
+    CertificateInfo,
+    SigningError,
+    SigningErrorCategory,
+    SigningResult,
+    classify_signing_error,
+)
 
 logger = logging.getLogger(__name__)
+
+
+CERTS_DIR_DEFAULT = Path(__file__).resolve().parent.parent / "certs"
+
+
+def _ps_single_quote(value: str) -> str:
+    return value.replace("'", "''")
+
+
+def _import_pfx_via_powershell(file_path: Path, password: str | None) -> bool:
+    cmd = (
+        f"Import-PfxCertificate -FilePath '{_ps_single_quote(str(file_path))}' "
+        "-CertStoreLocation Cert:\\CurrentUser\\My -ErrorAction Stop"
+    )
+    if password:
+        cmd = (
+            f"$pw = ConvertTo-SecureString '{_ps_single_quote(password)}' -AsPlainText -Force; "
+            f"Import-PfxCertificate -FilePath '{_ps_single_quote(str(file_path))}' "
+            "-CertStoreLocation Cert:\\CurrentUser\\My -Password $pw -ErrorAction Stop"
+        )
+    proc = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
+def _import_pfx_via_certutil(file_path: Path, password: str | None) -> bool:
+    args = ["certutil.exe", "-user", "-importPFX", str(file_path)]
+    if password:
+        args.append(password)
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
+    return proc.returncode == 0
+
+
+def import_certs_from_dir(
+    certs_dir: Path | None = None,
+    global_password: str | None = None,
+) -> int:
+    """Импортирует все *.pfx из каталога в хранилище CurrentUser\\My (только Windows).
+
+    Пароль для файла <name>.pfx берётся из соседнего <name>.pfx.pw (в приоритете),
+    иначе из global_password (обычно CERT_PASSWORD). Повторный импорт уже
+    установленного сертификата не считается ошибкой. Возвращает число успешно
+    импортированных сертификатов.
+    """
+    if sys.platform != "win32":
+        return 0
+    if certs_dir is None:
+        certs_dir = Path(os.getenv("CERTS_DIR", str(CERTS_DIR_DEFAULT)))
+    certs_dir = certs_dir.expanduser().resolve()
+    if global_password is None:
+        global_password = os.getenv("CERT_PASSWORD")
+    if not certs_dir.is_dir():
+        logger.warning(f"[WindowsSigner] Каталог {certs_dir} не найден — импорт PFX пропущен.")
+        return 0
+    imported = 0
+    for pfx in sorted(certs_dir.glob("*.pfx")):
+        password = global_password
+        pw_file = pfx.with_suffix(pfx.suffix + ".pw")
+        if pw_file.is_file():
+            password = pw_file.read_text(encoding="utf-8").strip()
+        logger.info(f"[WindowsSigner] Импорт {pfx} в хранилище CurrentUser\\My...")
+        if _import_pfx_via_powershell(pfx, password) or _import_pfx_via_certutil(pfx, password):
+            imported += 1
+        else:
+            logger.warning(f"[WindowsSigner] Не удалось импортировать {pfx} (возможно, уже установлен).")
+    logger.info(f"[WindowsSigner] Импортировано PFX-сертификатов: {imported}")
+    return imported
 
 
 class WindowsSigner(BaseSigner):

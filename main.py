@@ -119,6 +119,23 @@ def initialize_signer() -> BaseSigner:
         raise SystemExit(1) from e
 
 
+def import_windows_certs() -> None:
+    """Импорт всех PFX из CERTS_DIR в хранилище CurrentUser\\My (только Windows).
+
+    Аналог импорта *.pfx в mMy на Linux (docker-entrypoint.sh). Вызывается до
+    инициализации signer'а, чтобы импортированные сертификаты были видны сразу.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        from signers.windows import import_certs_from_dir
+
+        count = import_certs_from_dir()
+        logger.info(f"Импортировано PFX-сертификатов в Windows-хранилище: {count}")
+    except Exception:
+        logger.exception("Не удалось импортировать PFX-сертификаты")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: создаёт singleton-подписанта (если его ещё нет, напр. в тестах)."""
@@ -126,6 +143,7 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 60)
     logger.info("Signature Service — startup sequence")
     if signer is None:
+        import_windows_certs()
         signer = initialize_signer()
     signer_available = signer is not None
     logger.info("=" * 60)

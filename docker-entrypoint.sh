@@ -1,6 +1,9 @@
 #!/bin/sh
-# Скрипт входа контейнера: активация лицензии КриптоПро и импорт сертификата
-# (PFX с приватным ключом) в личное хранилище КриптоПро перед запуском сервиса.
+# Скрипт входа контейнера: активация лицензии КриптоПро и импорт ВСЕХ PFX-сертификатов
+# из каталога $CERTS_DIR (по умолчанию /certs) в машинное хранилище "Мой" (mMy).
+# Имя файла не важно — импортируются все *.pfx из каталога.
+# Пароль для файла cert.pfx берётся из соседнего cert.pfx.pw, если он есть,
+# иначе используется глобальная переменная CERT_PASSWORD.
 
 set -e
 
@@ -13,20 +16,38 @@ if [ -n "$CSP_LICENSE" ]; then
     cpconfig -license -set "$CSP_LICENSE" || echo "Предупреждение: не удалось активировать лицензию"
 fi
 
-# Импорт сертификата PFX в машинное хранилище "Мой" (mMy), если задан CERT_PATH.
+# Импорт всех PFX-сертификатов в машинное хранилище "Мой" (mMy).
 # pycades открывает CAPICOM_LOCAL_MACHINE_STORE + "My" — импортируем именно туда.
 # Флаг -pfx обязателен: без него certmgr не читает PFX-файл.
-if [ -n "$CERT_PATH" ] && [ -f "$CERT_PATH" ]; then
-    echo "Импорт сертификата $CERT_PATH в хранилище КриптоПро (mMy)..."
-    if [ -n "$CERT_PASSWORD" ]; then
-        certmgr -install -pfx -store mMy -file "$CERT_PATH" -pin "$CERT_PASSWORD" -silent \
-            || echo "Предупреждение: не удалось импортировать сертификат (возможно, уже установлен)"
-    else
-        certmgr -install -pfx -store mMy -file "$CERT_PATH" -silent \
-            || echo "Предупреждение: не удалось импортировать сертификат (возможно, уже установлен)"
-    fi
+CERTS_DIR="${CERTS_DIR:-/certs}"
+if [ -d "$CERTS_DIR" ]; then
+    imported=0
+    for f in "$CERTS_DIR"/*.pfx; do
+        [ -e "$f" ] || continue
+        base="${f%.pfx}"
+        pw="$CERT_PASSWORD"
+        if [ -f "$base.pw" ]; then
+            # Соседний файл <имя>.pfx.pw даёт пароль именно для этого сертификата.
+            pw="$(tr -d '\r\n' < "$base.pw")"
+        fi
+        echo "Импорт $f в хранилище КриптоПро (mMy)..."
+        if [ -n "$pw" ]; then
+            if certmgr -install -pfx -store mMy -file "$f" -pin "$pw" -silent; then
+                imported=$((imported + 1))
+            else
+                echo "Предупреждение: не удалось импортировать $f (возможно, уже установлен)"
+            fi
+        else
+            if certmgr -install -pfx -store mMy -file "$f" -silent; then
+                imported=$((imported + 1))
+            else
+                echo "Предупреждение: не удалось импортировать $f (возможно, уже установлен)"
+            fi
+        fi
+    done
+    echo "Импортировано PFX-сертификатов: $imported"
 else
-    echo "CERT_PATH не задан или файл не найден — сертификат не импортируется."
+    echo "Каталог $CERTS_DIR не найден — сертификаты не импортируются."
 fi
 
 # Запуск основного процесса.

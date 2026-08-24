@@ -43,8 +43,8 @@ export SERVICE_PORT=8101
 | `API_KEY_HEADER_NAME` | `X-API-Key` | Имя заголовка для API-ключа |
 | `API_KEYS` | — | Список ключей через запятую (`foo,bar,baz`) |
 | `SERVICE_API_KEY` | — | Одиночный API-ключ (если `API_KEYS` не задан) |
-| `CERT_PATH` | `/certs/cert.pfx` | Путь к PFX (Linux, необязательно) |
-| `CERT_PASSWORD` | — | Пароль PFX (Linux, необязательно) |
+| `CERTS_DIR` | `./certs` (Windows) / `/certs` (Linux) | Каталог с PFX-сертификатами, импортируемыми при старте |
+| `CERT_PASSWORD` | — | Пароль PFX по умолчанию; для файла `cert.pfx` можно указать свой в `cert.pfx.pw` |
 
 Значения можно положить в `.env` в корне проекта — они загружаются при старте.
 Переменные, уже заданные в окружении (например, через `export`), имеют приоритет
@@ -178,6 +178,9 @@ curl http://localhost:8101/api/certificates/
 - **Освобождение COM-объектов.** На Windows все COM-объекты освобождаются до
   `CoUninitialize()` (иначе pythoncom печатает `Win32 exception occurred releasing
   IUnknown`).
+- **Импорт сертификатов.** На Windows при старте импортируются все `*.pfx`
+  из `CERTS_DIR` (по умолчанию `./certs`) в `CurrentUser\My` — так же, как
+  в Linux/Docker все `*.pfx` импортируются в `mMy`.
 
 ## Платформы
 
@@ -185,7 +188,10 @@ curl http://localhost:8101/api/certificates/
 
 - Криптопровайдер: CAdESCOM через `win32com` (пакет `pywin32`), сборка не нужна.
 - Сертификаты: хранилище текущего пользователя `Cert:\CurrentUser\My`,
-  поиск по серийному номеру.
+  поиск по серийному номеру. При старте сервис импортирует в это хранилище
+  **все** `*.pfx` из каталога `CERTS_DIR` (по умолчанию `./certs`) — имя файла
+  не важно. Пароль для файла `cert.pfx` берётся из соседнего `cert.pfx.pw`,
+  если он есть, иначе из `CERT_PASSWORD`.
 - К подписи добавляется атрибут времени подписи (timestamp).
 
 ### Linux
@@ -205,6 +211,11 @@ curl http://localhost:8101/api/certificates/
   cryptonets --store mMy -pfx import your-cert.pfx password
   ```
 
+  В Docker это делается автоматически: при старте контейнера все `*.pfx`
+  из каталога `/certs` (монтируется из `./certs`) импортируются в `mMy`
+  независимо от имени файла. Пароль для файла `cert.pfx` берётся из
+  соседнего `cert.pfx.pw`, если он есть, иначе из `CERT_PASSWORD`.
+
 - Атрибуты времени подписи на Linux не добавляются (ограничение pycades).
 
 ## Docker
@@ -214,9 +225,10 @@ docker compose up -d --build
 ```
 
 Образ собирается из исходников (чтобы pycades линковался с системным CSP),
-сертификат монтируется из `certs/cert.pfx`, пароль передаётся через
-`CERT_PASSWORD` (см. `.env`). При подъёме контейнера автоматически запускается
-`python main.py --selftest`.
+каталог `./certs` монтируется в `/certs`, при старте все `*.pfx` из него
+импортируются в хранилище `mMy`, пароль передаётся через `CERT_PASSWORD`
+(или через соседний файл `<имя>.pfx.pw`). При подъёме контейнера автоматически
+запускается `python main.py --selftest`.
 
 ## Тестирование
 
@@ -253,7 +265,7 @@ tests/
 scripts/
   check_csp.sh          — проверка наличия CSP перед тестами
   run_tests.sh          — прогон всех проверок
-certs/                  — PFX-сертификат для Docker
+certs/                  — PFX-сертификаты (в Docker импортируются все *.pfx)
 Dockerfile, docker-compose.yml, docker-entrypoint.sh — контейнер
 requirements.txt        — зависимости (включая pytest, httpx)
 .env                    — переменные окружения для docker compose
