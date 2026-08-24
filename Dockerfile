@@ -62,13 +62,18 @@ COPY signers ./signers
 COPY tests ./tests
 
 # Скрипт входа: импорт PFX в хранилище КриптоПро перед запуском.
+# Нормализуем переводы строк: при checkout на Windows (core.autocrlf=true)
+# скрипт может прийти в контекст сборки с CRLF, и ядро не сможет исполнить
+# shebang "#!/bin/sh\r" -> "exec /usr/local/bin/docker-entrypoint.sh: no such file or directory".
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 8101
 
 # КриптоПро CSP работает с хранилищем /var/opt/cprocsp, запускается от root.
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+# Запуск через `sh` (а не прямой exec) + sed-нормализация выше делают entrypoint
+# нечувствительным к CRLF в контексте сборки.
+ENTRYPOINT ["sh", "/usr/local/bin/docker-entrypoint.sh"]
 
 # python main.py --selftest запускает авто-тесты перед стартом сервера
 # (main.py сам читает SERVICE_HOST/SERVICE_PORT из окружения).
