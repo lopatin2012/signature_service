@@ -110,6 +110,10 @@ class LinuxSigner(BaseSigner):
             return self._do_sign(data, serial_number, detached=False)
         except SigningError:
             raise
+        except ValueError:
+            # «Сертификат не найден» — ошибка входных данных; пробрасываем как есть,
+            # чтобы выше она отобразилась как 404 (см. main._map_signing_error).
+            raise
         except Exception as e:
             category = classify_signing_error(e)
             logger.error(f"[LinuxSigner] Неудачная попытка подписи: {e}", exc_info=True)
@@ -120,6 +124,8 @@ class LinuxSigner(BaseSigner):
         try:
             return self._do_sign(data, serial_number, detached=True)
         except SigningError:
+            raise
+        except ValueError:
             raise
         except Exception as e:
             category = classify_signing_error(e)
@@ -132,7 +138,10 @@ class LinuxSigner(BaseSigner):
         try:
             target_serial = serial_number.replace("-", "").lower()
             oCert = None
-            for cert in oStore.Certificates:
+            # ВАЖНО: pycades.Certificates — не итерируемая коллекция,
+            # перебор только через .Count / .Item(i + 1).
+            for i in range(oStore.Certificates.Count):
+                cert = oStore.Certificates.Item(i + 1)
                 if str(cert.SerialNumber).replace("-", "").lower() == target_serial:
                     oCert = cert
                     break
@@ -151,7 +160,11 @@ class LinuxSigner(BaseSigner):
             result_bytes = oSignedData.SignCades(
                 oSigner, pycades.CADESCOM_CADES_BES, bool(detached), pycades.CADESCOM_ENCODE_BASE64
             )
-            return base64.b64encode(result_bytes).decode(), SigningResult(success=True)
+            # ВАЖНО: SignCades с CADESCOM_ENCODE_BASE64 возвращает base64-СТРОКУ
+            # с переносами (CRLF), а не сырые байты. Контракт ожидает однострочный
+            # base64 — убираем переводы строк и повторное кодирование.
+            signed_b64 = "".join(str(result_bytes).split())
+            return signed_b64, SigningResult(success=True)
         finally:
             oStore.Close()
 
